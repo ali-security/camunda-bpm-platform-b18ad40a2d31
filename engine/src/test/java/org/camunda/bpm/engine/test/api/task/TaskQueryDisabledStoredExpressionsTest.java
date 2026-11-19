@@ -16,6 +16,7 @@
  */
 package org.camunda.bpm.engine.test.api.task;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -122,6 +123,82 @@ public class TaskQueryDisabledStoredExpressionsTest {
 
     // cleanup
     filterService.deleteFilter(filter.getId());
+  }
+
+  @Test
+  public void testStoreFilterWithExpressionInOrQuery() {
+    // given
+    TaskQuery taskQuery = taskService.createTaskQuery()
+        .or()
+          .dueAfterExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskName("task")
+        .endOr();
+    Filter filter = filterService.newTaskFilter("filter");
+    filter.setQuery(taskQuery);
+
+    // when/then
+    assertThatThrownBy(() -> filterService.saveFilter(filter))
+      .isInstanceOf(ProcessEngineException.class)
+      .hasMessageContaining(EXPECTED_STORED_QUERY_FAILURE_MESSAGE);
+    assertTrue(fieldIsUnchanged());
+    assertEquals(0, filterService.createFilterQuery().count());
+  }
+
+  @Test
+  public void testCannotExecuteStoredFilterWithExpressionInOrQuery() {
+    final TaskQuery filterQuery = taskService.createTaskQuery()
+        .or()
+          .dueAfterExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskName("task")
+        .endOr();
+
+    // store a filter bypassing validation
+    String filterId = processEngineConfiguration.getCommandExecutorTxRequired().execute(commandContext -> {
+      FilterEntity filter = new FilterEntity(EntityTypes.TASK);
+      filter.setQuery(filterQuery);
+      filter.setName("filter");
+      commandContext.getDbEntityManager().insert(filter);
+      return filter.getId();
+    });
+
+    extendFilterAndValidateFailingQuery(filterId, null);
+
+    // the extended query, as used by Tasklist, carries the Or queries of the stored filter
+    extendFilterAndValidateFailingQuery(filterId, taskService.createTaskQuery().taskName("task"));
+
+    // cleanup
+    filterService.deleteFilter(filterId);
+  }
+
+  @Test
+  public void testCannotSaveFilterWithExpressionInOrQueryAfterExtending() {
+    final TaskQuery filterQuery = taskService.createTaskQuery()
+        .or()
+          .dueAfterExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskName("task")
+        .endOr();
+
+    // store a filter bypassing validation
+    String filterId = processEngineConfiguration.getCommandExecutorTxRequired().execute(commandContext -> {
+      FilterEntity filter = new FilterEntity(EntityTypes.TASK);
+      filter.setQuery(filterQuery);
+      filter.setName("filter");
+      commandContext.getDbEntityManager().insert(filter);
+      return filter.getId();
+    });
+
+    // when the loaded filter is extended, its query no longer starts with itself in the Or query list
+    Filter filter = filterService.getFilter(filterId);
+    filter.extend(taskService.createTaskQuery().taskName("task"));
+
+    // then saving the filter still validates the Or queries
+    assertThatThrownBy(() -> filterService.saveFilter(filter))
+      .isInstanceOf(ProcessEngineException.class)
+      .hasMessageContaining(EXPECTED_STORED_QUERY_FAILURE_MESSAGE);
+    assertTrue(fieldIsUnchanged());
+
+    // cleanup
+    filterService.deleteFilter(filterId);
   }
 
   @Test

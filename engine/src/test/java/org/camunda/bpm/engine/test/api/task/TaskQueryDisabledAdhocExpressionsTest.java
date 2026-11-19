@@ -24,6 +24,7 @@ import java.util.Date;
 
 import org.camunda.bpm.engine.BadUserRequestException;
 import org.camunda.bpm.engine.filter.Filter;
+import org.camunda.bpm.engine.impl.TaskQueryImpl;
 import org.camunda.bpm.engine.task.TaskQuery;
 import org.camunda.bpm.engine.test.util.PluggableProcessEngineTest;
 import org.junit.Before;
@@ -70,6 +71,71 @@ public class TaskQueryDisabledAdhocExpressionsTest extends PluggableProcessEngin
     executeAndValidateFailingQuery(taskService.createTaskQuery().taskCreatedAfterExpression(STATE_MANIPULATING_EXPRESSION));
     executeAndValidateFailingQuery(taskService.createTaskQuery().taskCreatedBeforeExpression(STATE_MANIPULATING_EXPRESSION));
     executeAndValidateFailingQuery(taskService.createTaskQuery().taskOwnerExpression(STATE_MANIPULATING_EXPRESSION));
+  }
+
+  @Test
+  public void testAdhocExpressionsInOrQueryFail() {
+    // expressions nested in an Or query are validated like expressions of the enclosing query
+    executeAndValidateFailingQuery(taskService.createTaskQuery()
+        .or()
+          .dueAfterExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskName("task")
+        .endOr());
+    executeAndValidateFailingQuery(taskService.createTaskQuery()
+        .taskName("task")
+        .or()
+          .taskAssigneeExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskOwner("owner")
+        .endOr());
+  }
+
+  @Test
+  public void testAdhocExpressionsInAddedOrQueryFail() {
+    // the REST API builds Or queries with the no-argument constructor and attaches them via addOrQuery
+    TaskQueryImpl query = (TaskQueryImpl) taskService.createTaskQuery();
+    TaskQueryImpl orQuery = new TaskQueryImpl();
+    orQuery.setOrQueryActive();
+    orQuery.dueAfterExpression(STATE_MANIPULATING_EXPRESSION);
+    orQuery.taskName("task");
+    query.addOrQuery(orQuery);
+
+    executeAndValidateFailingQuery(query);
+  }
+
+  @Test
+  public void testAdhocExpressionsInOrQuerySucceedWhenEnabled() {
+    processEngineConfiguration.setEnableExpressionsInAdhocQueries(true);
+    try {
+      TaskQuery query = taskService.createTaskQuery()
+          .or()
+            .dueAfterExpression("${now()}")
+            .taskName("task")
+          .endOr();
+
+      assertEquals(0, query.list().size());
+      assertEquals(0, query.count());
+    } finally {
+      processEngineConfiguration.setEnableExpressionsInAdhocQueries(false);
+    }
+  }
+
+  @Test
+  public void testExtendStoredFilterByOrQueryExpression() {
+    // given a stored filter
+    TaskQuery taskQuery = taskService.createTaskQuery().dueAfterExpression("${now()}");
+    Filter filter = filterService.newTaskFilter("filter");
+    filter.setQuery(taskQuery);
+    filterService.saveFilter(filter);
+
+    // it is not possible to execute the filter with an extended query that uses an expression in an Or query
+    extendFilterAndValidateFailingQuery(filter, taskService.createTaskQuery()
+        .or()
+          .dueAfterExpression(STATE_MANIPULATING_EXPRESSION)
+          .taskName("task")
+        .endOr());
+
+    // cleanup
+    filterService.deleteFilter(filter.getId());
   }
 
   @Test
